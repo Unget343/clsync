@@ -5,6 +5,8 @@
 
 namespace rfs {
 
+bool is_target_mounted_file(const std::string& path);
+
 class File {
 protected:
     std::fstream stream_;

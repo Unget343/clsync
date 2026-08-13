@@ -15,14 +15,7 @@ NtfsFile::~NtfsFile() {
 }
 
 bool NtfsFile::open(const std::string& path, std::ios_base::openmode mode) {
-    // Intercept access to .mounted to hide it from inner file systems
-    if (path == ".mounted" || 
-        (path.length() >= 9 && path.substr(path.length() - 9) == "/.mounted") ||
-        (path.length() >= 9 && path.substr(path.length() - 9) == "\\.mounted")) {
-        last_error_ = 5; // Access Denied
-        return false;
-    }
-    
+    // Interception is now handled by the base class rfs::File::open
     return rfs::File::open(path, mode);
 }
 
@@ -30,9 +23,7 @@ bool NtfsFile::get_file_info(WIN32_FIND_DATAW* info) {
     if (!info || path_.empty()) return false;
 
     // Hide .mounted from get_file_info requests
-    if (path_ == ".mounted" || 
-        (path_.length() >= 9 && path_.substr(path_.length() - 9) == "/.mounted") ||
-        (path_.length() >= 9 && path_.substr(path_.length() - 9) == "\\.mounted")) {
+    if (rfs::is_target_mounted_file(path_)) {
         last_error_ = 2; // File Not Found
         return false;
     }

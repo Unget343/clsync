@@ -67,7 +67,10 @@ void* mountd(char *path)
     for (const auto& entry : fs::directory_iterator(rfs_path)) 
     {
         if (entry.is_regular_file() &&
-             entry.path().filename() == mnt) return (void*)entry.path().c_str();
+             entry.path().filename() == mnt) {
+             static string s_path = entry.path().string();
+             return (void*)s_path.c_str();
+        }
     }
 
     return nullptr; 

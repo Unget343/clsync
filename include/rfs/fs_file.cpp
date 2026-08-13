@@ -1,6 +1,34 @@
 #include "fs_file.h"
+#include <algorithm>
+#include <cctype>
+
+#ifdef _WIN32
+#include <winfsp/winfsp.h>
+#endif
 
 namespace rfs {
+
+bool is_target_mounted_file(const std::string& path) {
+#ifdef _WIN32
+    std::string lower_path = path;
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(),
+                   [](unsigned char c){ return std::tolower(c); });
+    
+    size_t sep = lower_path.find_last_of("/\\");
+    std::string filename = (sep == std::string::npos) ? lower_path : lower_path.substr(sep + 1);
+    
+    if (filename == ".mounted" || filename.find(".mounted:") == 0) {
+        return true;
+    }
+#else
+    size_t sep = path.find_last_of('/');
+    std::string filename = (sep == std::string::npos) ? path : path.substr(sep + 1);
+    if (filename == ".mounted") {
+        return true;
+    }
+#endif
+    return false;
+}
 
 File::File() : last_error_(0) {
 }
@@ -12,6 +40,11 @@ File::~File() {
 }
 
 bool File::open(const std::string& path, std::ios_base::openmode mode) {
+    if (is_target_mounted_file(path)) {
+        last_error_ = 5; // Access Denied
+        return false;
+    }
+
     path_ = path;
     stream_.open(path, mode);
     update_error_state();
