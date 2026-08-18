@@ -16,11 +16,15 @@ NtfsFile::~NtfsFile() {
 
 bool NtfsFile::open(const std::string& path, std::ios_base::openmode mode) {
     // Interception is now handled by the base class rfs::File::open
+    if (path.length() >= PATH_MAX) return false;
+    if (mode == INT_MAX) return false;
+
     return rfs::File::open(path, mode);
 }
 
 bool NtfsFile::get_file_info(WIN32_FIND_DATAW* info) {
     if (!info || path_.empty()) return false;
+    
 
     // Hide .mounted from get_file_info requests
     if (rfs::is_target_mounted_file(path_)) {
