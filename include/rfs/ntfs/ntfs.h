@@ -5,16 +5,15 @@
 #pragma GCC attribute("-Wextra")
 #endif
 
-#ifdef _WIN32_
+#ifdef _WIN32
 #   define __WIN_RFS__
-#   if defined(__MSVC__)
+#   if defined(_MSC_VER)
 #       include <windows.h>
 #   endif
 #endif
 
 #include <stdint.h>
 #include <string.h>
-#include <strings.h>
 #include <stddef.h>
 #include <wchar.h>
 #if __DEBUG__

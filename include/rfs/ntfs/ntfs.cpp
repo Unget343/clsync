@@ -1,5 +1,5 @@
 #include "ntfs.h"
-#include <limits.h>
+#include <climits>
 
 #ifdef __WIN_RFS__
 #include <windows.h>
@@ -16,7 +16,7 @@ NtfsFile::~NtfsFile() {
 
 bool NtfsFile::open(const std::string& path, std::ios_base::openmode mode) {
     // Interception is now handled by the base class rfs::File::open
-    if (path.length() >= PATH_MAX) return false;
+    if (path.empty() || path.length() > 32767) return false;
     if (mode == INT_MAX) return false;
 
     return rfs::File::open(path, mode);
