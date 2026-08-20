@@ -57,7 +57,22 @@ SocketStat Socket<Request>::close() noexcept
             client_fd = -1;
         }
 #   else
-        // implamanation for windows
+        if (server_fd != INVALID_SOCKET_VALUE) {
+#ifdef _WIN32
+            ::closesocket(server_fd);
+#else
+            ::close(server_fd);
+#endif
+            server_fd = INVALID_SOCKET_VALUE;
+        }
+        if (client_fd != INVALID_SOCKET_VALUE) {
+#ifdef _WIN32
+            ::closesocket(client_fd);
+#else
+            ::close(client_fd);
+#endif
+            client_fd = INVALID_SOCKET_VALUE;
+        }
 #   endif
     return OK;
 }
