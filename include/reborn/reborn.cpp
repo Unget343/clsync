@@ -42,6 +42,25 @@ template<>
     return last_status;
 }
 
+template<>
+SocketStat Socket<Request>::close() noexcept
+{
+#   ifdef __REB_TEST__
+        if (server_fd != -1)
+        {
+            ::close(server_fd);
+            server_fd = -1;
+        }
+        if (client_fd != -1)
+        {
+            ::close(client_fd);
+            client_fd = -1;
+        }
+#   else
+        // implamanation for windows
+#   endif
+    return OK;
+}
 
 template<>
 SocketStat Socket<Request>::getLastStatus() const

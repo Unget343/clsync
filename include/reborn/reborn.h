@@ -115,6 +115,8 @@ namespace reborn
             const char* getAnswer() const
             { return answer; }
 
+            SocketStat close() noexcept;
+
             explicit operator bool() const 
             { return server_fd != INVALID_SOCKET_VALUE; }
 
