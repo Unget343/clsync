@@ -1,9 +1,4 @@
 #pragma once
-#define __TEST__
-
-#ifdef __TEST__
-#   define __REB_TEST__ 1
-#endif
 
 #include <cstring>
 #include <cstddef>
