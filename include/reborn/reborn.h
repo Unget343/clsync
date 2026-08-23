@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstring>
+#include <cstddef>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -51,15 +54,13 @@ namespace reborn
     {
         private:
             const char* socket_path;
-            _SOCKET _request;
-
-            vector<Request> buffer;
-            static constexpr size_t kMaxBufferRequests = 10;
+            deque<Request> buffer;
+            mutable mutex buffer_mutex;
 
         protected:
             SOCKET_FD server_fd = INVALID_SOCKET_VALUE;
             SOCKET_FD client_fd = INVALID_SOCKET_VALUE;
-            ssize_t bytes = 0;
+            std::ptrdiff_t bytes = 0;
             SocketStat last_status = UNDEFINED;
             const char* answer = nullptr;
 
@@ -71,7 +72,6 @@ namespace reborn
             
             Socket()
             {
-                buffer.reserve(kMaxBufferRequests);
 #ifdef _WIN32
                 WSADATA wsaData;
                 if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -86,7 +86,6 @@ namespace reborn
         public:
             Socket(const char* _path) : socket_path(_path)
             {
-                buffer.reserve(kMaxBufferRequests);
 #ifdef _WIN32
                 WSADATA wsaData;
                 if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {

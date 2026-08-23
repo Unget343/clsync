@@ -10,9 +10,7 @@ SocketStat Socket<Request>::enqueueRequest(const string& request)
     if (request.empty())
         return ERR;
 
-    if (buffer.size() >= kMaxBufferRequests)
-        return ERR;
-
+    lock_guard<mutex> lock(buffer_mutex);
     buffer.emplace_back(request);
     return OK;
 }
@@ -26,6 +24,7 @@ bool Socket<Request>::forwardTo(const Request& request)
 template<>
  SocketStat Socket<Request>::processNextRequest()
 {
+    lock_guard<mutex> lock(buffer_mutex);
     if (buffer.empty())
         return UNDEFINED;
 
@@ -48,12 +47,20 @@ SocketStat Socket<Request>::close() noexcept
 #   ifdef __REB_TEST__
         if (server_fd != -1)
         {
+#           ifdef _WIN32
+            ::closesocket(server_fd);
+#           else
             ::close(server_fd);
+#           endif
             server_fd = -1;
         }
         if (client_fd != -1)
         {
+#           ifdef _WIN32
+            ::closesocket(client_fd);
+#           else
             ::close(client_fd);
+#           endif
             client_fd = -1;
         }
 #   else
@@ -78,10 +85,6 @@ SocketStat Socket<Request>::close() noexcept
 }
 
 template<>
-SocketStat Socket<Request>::getLastStatus() const
-{ return last_status; }
-
-template<>
 SocketStat Socket<Request>::setSocketPath(const char* _path)
 {
     socket_path = _path;
@@ -101,8 +104,12 @@ template<>
 SocketStat Socket<Request>::processRequests()
 {
     SocketStat status = ERR;
-    while (!buffer.empty())
-        status = processNextRequest();
+    while (true)
+    {
+        const auto next = processNextRequest();
+        if (next == UNDEFINED) break;
+        status = next;
+    }
 
     return status;
 }

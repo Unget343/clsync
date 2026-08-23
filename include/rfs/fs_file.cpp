@@ -2,10 +2,6 @@
 #include <algorithm>
 #include <cctype>
 
-#ifdef _WIN32
-#include <winfsp/winfsp.h>
-#endif
-
 namespace rfs {
 
 bool is_target_mounted_file(const std::string& path) {
@@ -23,7 +19,7 @@ bool is_target_mounted_file(const std::string& path) {
 #else
     size_t sep = path.find_last_of('/');
     std::string filename = (sep == std::string::npos) ? path : path.substr(sep + 1);
-    if (filename == ".mounted") {
+    if (filename == ".mounted" || filename.find(".mounted:") == 0) {
         return true;
     }
 #endif

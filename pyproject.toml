@@ -1,0 +1,21 @@
+[build-system]
+requires = []
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clsync-tests"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "unit: fast tests without network or external processes",
+    "ipc: Reborn IPC interface tests",
+    "ntfs: virtual NTFS and file-operation tests",
+    "service: HTTP/C# service compatibility tests",
+    "integration: C++ component integration tests",
+    "e2e: complete file-transfer scenarios",
+]
