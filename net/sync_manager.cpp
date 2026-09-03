@@ -216,8 +216,16 @@ std::optional<SyncManager::QueueItem> SyncManager::take_task(bool large) {
     std::unique_lock lock(mutex_);
     auto& queue = large ? large_queue_ : small_queue_;
     while (!stopping_) {
+        if (service_state_.load() == ServiceState::Error) {
+            return std::nullopt;
+        }
+
         if (service_state_.load() != ServiceState::Connected) {
-            queue_cv_.wait(lock, [&] { return stopping_ || service_state_.load() == ServiceState::Connected; });
+            queue_cv_.wait(lock, [&] {
+                return stopping_ || service_state_.load() == ServiceState::Connected ||
+                       service_state_.load() == ServiceState::Error;
+            });
+            if (stopping_ || service_state_.load() == ServiceState::Error) return std::nullopt;
             continue;
         }
 
@@ -256,6 +264,7 @@ void SyncManager::worker_loop(bool large) {
 
 void SyncManager::monitor_loop() {
     Network network(config_.network_timeout_ms, 0, config_.user_agent);
+    unsigned int consecutive_failures = 0;
     while (true) {
         {
             std::lock_guard lock(mutex_);
@@ -263,8 +272,18 @@ void SyncManager::monitor_loop() {
         }
         std::string response;
         const bool connected = network.http_get(config_.health_url, response);
-        set_service_state(connected ? ServiceState::Connected : ServiceState::Disconnected);
-        if (!connected) output("sync", -1, "service health check failed: " + response);
+        if (connected) {
+            consecutive_failures = 0;
+            set_service_state(ServiceState::Connected);
+        } else {
+            ++consecutive_failures;
+            output("sync", -1, "service health check failed: " + response);
+            if (consecutive_failures > config_.max_retries) {
+                set_service_state(ServiceState::Error);
+            } else {
+                set_service_state(ServiceState::Disconnected);
+            }
+        }
 
         std::unique_lock lock(mutex_);
         if (queue_cv_.wait_for(lock, config_.monitor_interval, [&] { return stopping_; })) return;
@@ -324,7 +343,7 @@ void SyncManager::complete_task(const std::string& id, TaskState state, std::str
         stored.http_status = http_status;
         result = stored;
         callback = result_callback_;
-        --active_tasks_;
+        if (active_tasks_ > 0) --active_tasks_;
         if (active_tasks_ == 0 && small_queue_.empty() && large_queue_.empty()) idle_cv_.notify_all();
     }
     if (callback) callback(result);
@@ -339,8 +358,8 @@ void SyncManager::requeue_task(const QueueItem& item, std::string error, long ht
         stored.state = TaskState::Retry;
         stored.error = std::move(error);
         stored.http_status = http_status;
-        if (stopping_) {
-            stored.state = TaskState::Cancelled;
+        if (stopping_ || service_state_.load() == ServiceState::Error) {
+            stored.state = stopping_ ? TaskState::Cancelled : TaskState::Failed;
         } else {
             auto retry_item = item;
             retry_item.ready_at = std::chrono::steady_clock::now() + config_.retry_delay;
@@ -348,7 +367,7 @@ void SyncManager::requeue_task(const QueueItem& item, std::string error, long ht
         }
         result = stored;
         callback = result_callback_;
-        --active_tasks_;
+        if (active_tasks_ > 0) --active_tasks_;
         if (active_tasks_ == 0 && small_queue_.empty() && large_queue_.empty()) idle_cv_.notify_all();
     }
     if (callback) callback(result);
@@ -358,8 +377,9 @@ void SyncManager::requeue_task(const QueueItem& item, std::string error, long ht
 bool SyncManager::wait_for_idle(std::chrono::milliseconds timeout) {
     std::unique_lock lock(mutex_);
     return idle_cv_.wait_for(lock, timeout, [&] {
-        return active_tasks_ == 0 && small_queue_.empty() && large_queue_.empty();
-    });
+        return (active_tasks_ == 0 && small_queue_.empty() && large_queue_.empty()) ||
+               service_state_.load() == ServiceState::Error || stopping_;
+    }) && service_state_.load() != ServiceState::Error && !stopping_;
 }
 
 ServiceState SyncManager::service_state() const {
@@ -386,9 +406,34 @@ void SyncManager::set_result_callback(ResultCallback callback) {
 }
 
 void SyncManager::set_service_state(ServiceState state) {
-    const auto previous = service_state_.exchange(state);
-    if (previous != state) output("sync", 0, "service state " + state_name(state));
-    queue_cv_.notify_all();
+    std::vector<std::pair<ResultCallback, SyncResult>> pending_callbacks;
+    {
+        std::lock_guard lock(mutex_);
+        const auto previous = service_state_.exchange(state);
+        if (previous != state) {
+            output("sync", 0, "service state " + state_name(state));
+            if (state == ServiceState::Error) {
+                for (auto& [id, result] : results_) {
+                    if (result.state == TaskState::Pending || result.state == TaskState::Retry) {
+                        result.state = TaskState::Failed;
+                        if (result.error.empty()) {
+                            result.error = "Service health check failed permanently.";
+                        }
+                        if (result_callback_) {
+                            pending_callbacks.emplace_back(result_callback_, result);
+                        }
+                    }
+                }
+                small_queue_.clear();
+                large_queue_.clear();
+            }
+        }
+        queue_cv_.notify_all();
+        idle_cv_.notify_all();
+    }
+    for (const auto& [callback, result] : pending_callbacks) {
+        callback(result);
+    }
 }
 
 bool SyncManager::is_retryable(long http_status, const std::string& error) {

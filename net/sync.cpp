@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <mutex>
 
 namespace {
@@ -47,9 +48,11 @@ bool load_configuration(clsync::SyncConfig& config, std::string& error) {
     if (set_unsigned_from_environment("CLSYNC_TIMEOUT_MS", value, error)) {
         if (value) config.network_timeout_ms = value;
     } else return false;
+    value = 0;
     if (set_unsigned_from_environment("CLSYNC_RETRY_DELAY_MS", value, error)) {
         if (value) config.retry_delay = std::chrono::milliseconds(value);
     } else return false;
+    value = 0;
     if (set_unsigned_from_environment("CLSYNC_MONITOR_INTERVAL_MS", value, error)) {
         if (value) config.monitor_interval = std::chrono::milliseconds(value);
     } else return false;
@@ -80,32 +83,38 @@ int main(int argc, char* argv[]) {
     }
 
     const char* socket_path = std::getenv("CLSYNC_SOCKET_PATH");
-    reborn::Socket<reborn::Request> socket(socket_path ? socket_path : "clsync.sock");
-    if (!socket) {
+    auto socket = std::make_shared<reborn::Socket<reborn::Request>>(socket_path ? socket_path : "clsync.sock");
+    if (!*socket) {
         output("sync", -1, "failed to create Reborn IPC socket");
         return 1;
     }
 
+    auto ipc_mutex = std::make_shared<std::mutex>();
     clsync::SyncManager manager(std::move(config));
-    std::mutex ipc_mutex;
-    manager.set_result_callback([&](const clsync::SyncResult& result) {
+    manager.set_result_callback([socket, ipc_mutex](const clsync::SyncResult& result) {
         const auto message = "SYNC " + result.task.id + " " + task_state_name(result.state) +
                              " attempts=" + std::to_string(result.attempts);
-        std::lock_guard lock(ipc_mutex);
-        socket.sendRequest(message.c_str());
+        std::lock_guard lock(*ipc_mutex);
+        socket->sendRequest(message.c_str());
     });
     if (!manager.start(error)) {
         output("sync", -1, error);
         return 1;
     }
 
-    socket.sendRequest("SYNC READY");
+    {
+        std::lock_guard lock(*ipc_mutex);
+        socket->sendRequest("SYNC READY");
+    }
     for (int index = 3; index < argc; ++index) {
         if (!manager.enqueue_ipc_command(argv[index], error)) {
             output("sync", -1, error);
-            socket.sendRequest("SYNC ERROR");
+            {
+                std::lock_guard lock(*ipc_mutex);
+                socket->sendRequest("SYNC ERROR");
+                socket->processRequests();
+            }
             manager.stop();
-            socket.processRequests();
             return 1;
         }
     }
@@ -114,8 +123,11 @@ int main(int argc, char* argv[]) {
     bool succeeded = completed;
     for (const auto& result : manager.results())
         succeeded = succeeded && result.state == clsync::TaskState::Completed;
-    socket.sendRequest(succeeded ? "SYNC COMPLETED" : "SYNC FAILED");
-    manager.stop();
-    socket.processRequests();
+    {
+        std::lock_guard lock(*ipc_mutex);
+        socket->sendRequest(succeeded ? "SYNC COMPLETED" : "SYNC FAILED");
+        manager.stop();
+        socket->processRequests();
+    }
     return succeeded ? 0 : 1;
 }
