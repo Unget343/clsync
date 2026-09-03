@@ -2,6 +2,7 @@
 #include "../include/reborn/reborn.h"
 #include "sync_manager.h"
 
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -23,12 +24,27 @@ std::string task_state_name(clsync::TaskState state) {
     return "UNKNOWN";
 }
 
-bool set_unsigned_from_environment(const char* name, unsigned int& value, std::string& error) {
+bool set_unsigned_from_environment(const char* name, unsigned int& value, std::string& error, bool allow_zero = false) {
     const char* raw = std::getenv(name);
     if (!raw) return true;
+    while (std::isspace(static_cast<unsigned char>(*raw))) ++raw;
+    if (*raw == '\0' || *raw == '-') {
+        error = std::string("Invalid ") + name;
+        return false;
+    }
     try {
-        const auto parsed = std::stoul(raw);
-        if (parsed == 0 || parsed > (std::numeric_limits<unsigned int>::max)()) throw std::out_of_range("range");
+        std::size_t pos = 0;
+        const auto parsed = std::stoul(raw, &pos);
+        while (raw[pos] != '\0') {
+            if (!std::isspace(static_cast<unsigned char>(raw[pos]))) {
+                error = std::string("Invalid ") + name;
+                return false;
+            }
+            ++pos;
+        }
+        if ((!allow_zero && parsed == 0) || parsed > (std::numeric_limits<unsigned int>::max)()) {
+            throw std::out_of_range("range");
+        }
         value = static_cast<unsigned int>(parsed);
         return true;
     } catch (const std::exception&) {
@@ -40,27 +56,47 @@ bool set_unsigned_from_environment(const char* name, unsigned int& value, std::s
 bool load_configuration(clsync::SyncConfig& config, std::string& error) {
     const auto user_agent = std::getenv("CLSYNC_USER_AGENT");
     if (user_agent) config.user_agent = user_agent;
-    if (!set_unsigned_from_environment("CLSYNC_SMALL_WORKERS", config.small_file_workers, error) ||
-        !set_unsigned_from_environment("CLSYNC_LARGE_WORKERS", config.large_file_workers, error) ||
-        !set_unsigned_from_environment("CLSYNC_MAX_RETRIES", config.max_retries, error)) return false;
+    if (!set_unsigned_from_environment("CLSYNC_SMALL_WORKERS", config.small_file_workers, error, false) ||
+        !set_unsigned_from_environment("CLSYNC_LARGE_WORKERS", config.large_file_workers, error, false) ||
+        !set_unsigned_from_environment("CLSYNC_MAX_RETRIES", config.max_retries, error, true)) return false;
 
-    unsigned int value = 0;
-    if (set_unsigned_from_environment("CLSYNC_TIMEOUT_MS", value, error)) {
-        if (value) config.network_timeout_ms = value;
+    unsigned int timeout_ms = 0;
+    if (set_unsigned_from_environment("CLSYNC_TIMEOUT_MS", timeout_ms, error, false)) {
+        if (timeout_ms) config.network_timeout_ms = timeout_ms;
     } else return false;
-    value = 0;
-    if (set_unsigned_from_environment("CLSYNC_RETRY_DELAY_MS", value, error)) {
-        if (value) config.retry_delay = std::chrono::milliseconds(value);
+
+    unsigned int retry_delay_ms = 0;
+    if (set_unsigned_from_environment("CLSYNC_RETRY_DELAY_MS", retry_delay_ms, error, true)) {
+        if (retry_delay_ms) config.retry_delay = std::chrono::milliseconds(retry_delay_ms);
     } else return false;
-    value = 0;
-    if (set_unsigned_from_environment("CLSYNC_MONITOR_INTERVAL_MS", value, error)) {
-        if (value) config.monitor_interval = std::chrono::milliseconds(value);
+
+    unsigned int monitor_interval_ms = 0;
+    if (set_unsigned_from_environment("CLSYNC_MONITOR_INTERVAL_MS", monitor_interval_ms, error, false)) {
+        if (monitor_interval_ms) config.monitor_interval = std::chrono::milliseconds(monitor_interval_ms);
     } else return false;
 
     const char* threshold = std::getenv("CLSYNC_LARGE_FILE_THRESHOLD");
     if (threshold) {
-        try { config.large_file_threshold = std::stoull(threshold); }
-        catch (const std::exception&) { error = "Invalid CLSYNC_LARGE_FILE_THRESHOLD"; return false; }
+        while (std::isspace(static_cast<unsigned char>(*threshold))) ++threshold;
+        if (*threshold == '\0' || *threshold == '-') {
+            error = "Invalid CLSYNC_LARGE_FILE_THRESHOLD";
+            return false;
+        }
+        try {
+            std::size_t pos = 0;
+            const auto parsed = std::stoull(threshold, &pos);
+            while (threshold[pos] != '\0') {
+                if (!std::isspace(static_cast<unsigned char>(threshold[pos]))) {
+                    error = "Invalid CLSYNC_LARGE_FILE_THRESHOLD";
+                    return false;
+                }
+                ++pos;
+            }
+            config.large_file_threshold = parsed;
+        } catch (const std::exception&) {
+            error = "Invalid CLSYNC_LARGE_FILE_THRESHOLD";
+            return false;
+        }
     }
     return true;
 }

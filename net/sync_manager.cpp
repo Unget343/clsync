@@ -9,12 +9,64 @@
 namespace clsync {
 namespace {
 
+#ifdef _WIN32
+#include <cwctype>
+bool path_part_equal(const std::filesystem::path& p1, const std::filesystem::path& p2) {
+    const auto& s1 = p1.native();
+    const auto& s2 = p2.native();
+    if (s1.size() != s2.size()) return false;
+    for (size_t i = 0; i < s1.size(); ++i) {
+        if (std::towlower(s1[i]) != std::towlower(s2[i])) return false;
+    }
+    return true;
+}
+#else
+bool path_part_equal(const std::filesystem::path& p1, const std::filesystem::path& p2) {
+    return p1 == p2;
+}
+#endif
+
 bool is_descendant_of(const std::filesystem::path& child, const std::filesystem::path& parent) {
     auto child_part = child.begin();
     for (auto parent_part = parent.begin(); parent_part != parent.end(); ++parent_part, ++child_part) {
-        if (child_part == child.end() || *child_part != *parent_part) return false;
+        if (child_part == child.end() || !path_part_equal(*child_part, *parent_part)) return false;
     }
     return true;
+}
+
+std::vector<std::string> parse_tokens(const std::string& command) {
+    std::vector<std::string> tokens;
+    std::string current;
+    bool in_quotes = false;
+    char quote_char = '\0';
+    for (size_t i = 0; i < command.size(); ++i) {
+        char ch = command[i];
+        if (in_quotes) {
+            if (ch == quote_char) {
+                in_quotes = false;
+            } else if (ch == '\\' && i + 1 < command.size()) {
+                current += command[++i];
+            } else {
+                current += ch;
+            }
+        } else {
+            if (ch == '"' || ch == '\'') {
+                in_quotes = true;
+                quote_char = ch;
+            } else if (std::isspace(static_cast<unsigned char>(ch))) {
+                if (!current.empty()) {
+                    tokens.push_back(std::move(current));
+                    current.clear();
+                }
+            } else {
+                current += ch;
+            }
+        }
+    }
+    if (!current.empty() || in_quotes) {
+        tokens.push_back(std::move(current));
+    }
+    return tokens;
 }
 
 std::string state_name(ServiceState state) {
@@ -121,7 +173,8 @@ bool SyncManager::is_large_task(const SyncTask& task, std::string& error) const 
 std::optional<std::filesystem::path> SyncManager::resolve_local_path(
     const std::filesystem::path& path, bool create_parent, std::string& error) const {
     const auto normalized = path.lexically_normal();
-    if (normalized.empty() || normalized.is_absolute() || normalized == ".") {
+    if (normalized.empty() || normalized.is_absolute() || normalized.has_root_name() ||
+        normalized.has_root_directory() || normalized == ".") {
         error = "Local path must be a non-empty relative path.";
         return std::nullopt;
     }
@@ -180,35 +233,65 @@ bool SyncManager::enqueue(SyncTask task, std::string& error) {
 }
 
 bool SyncManager::enqueue_ipc_command(const std::string& command, std::string& error) {
-    std::istringstream stream(command);
-    std::string operation;
-    SyncTask task;
-    std::string expected_size;
-    std::string expected_sha256;
-    stream >> operation;
+    const auto tokens = parse_tokens(command);
+    if (tokens.empty()) {
+        error = "Empty IPC command.";
+        return false;
+    }
+
+    const auto& operation = tokens[0];
     if (operation == "STOP") {
+        if (tokens.size() != 1) {
+            error = "Malformed IPC command.";
+            return false;
+        }
         stop();
         return true;
     }
+
+    SyncTask task;
     if (operation == "DOWNLOAD") {
-        task.direction = SyncDirection::Download;
-        stream >> task.id >> task.url >> task.local_path >> expected_size >> expected_sha256;
-        if (expected_size != "-" && !expected_size.empty()) {
-            try { task.validation.expected_size = std::stoull(expected_size); }
-            catch (const std::exception&) { error = "Invalid expected size."; return false; }
+        if (tokens.size() != 6) {
+            error = "Malformed IPC command.";
+            return false;
         }
-        if (expected_sha256 != "-" && !expected_sha256.empty()) task.validation.expected_sha256 = expected_sha256;
+        task.direction = SyncDirection::Download;
+        task.id = tokens[1];
+        task.url = tokens[2];
+        task.local_path = tokens[3];
+        const auto& expected_size = tokens[4];
+        const auto& expected_sha256 = tokens[5];
+
+        if (expected_size != "-" && !expected_size.empty()) {
+            try {
+                std::size_t pos = 0;
+                task.validation.expected_size = std::stoull(expected_size, &pos);
+                if (pos != expected_size.size()) {
+                    error = "Invalid expected size.";
+                    return false;
+                }
+            } catch (const std::exception&) {
+                error = "Invalid expected size.";
+                return false;
+            }
+        }
+        if (expected_sha256 != "-" && !expected_sha256.empty()) {
+            task.validation.expected_sha256 = expected_sha256;
+        }
     } else if (operation == "UPLOAD") {
+        if (tokens.size() != 4) {
+            error = "Malformed IPC command.";
+            return false;
+        }
         task.direction = SyncDirection::Upload;
-        stream >> task.id >> task.url >> task.local_path;
+        task.id = tokens[1];
+        task.url = tokens[2];
+        task.local_path = tokens[3];
     } else {
         error = "Unsupported IPC command.";
         return false;
     }
-    if (stream.fail()) {
-        error = "Malformed IPC command.";
-        return false;
-    }
+
     return enqueue(std::move(task), error);
 }
 
@@ -437,6 +520,12 @@ void SyncManager::set_service_state(ServiceState state) {
 }
 
 bool SyncManager::is_retryable(long http_status, const std::string& error) {
+    if (error.find("File does not exist") != std::string::npos ||
+        error.find("Failed to open file") != std::string::npos ||
+        error.find("Cannot read") != std::string::npos ||
+        error.find("Cannot create") != std::string::npos) {
+        return false;
+    }
     return http_status == 0 || http_status == 408 || http_status == 425 || http_status == 429 ||
            http_status >= 500 || error.find("validation failed") != std::string::npos;
 }
