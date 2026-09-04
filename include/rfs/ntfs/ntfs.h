@@ -1,10 +1,5 @@
 #pragma once
 
-#ifdef __GNUC__
-#pragma interface
-#pragma GCC attribute("-Wextra")
-#endif
-
 #ifdef _WIN32
 #   define __WIN_RFS__
 #   if defined(_MSC_VER)
